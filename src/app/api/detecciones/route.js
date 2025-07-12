@@ -1,24 +1,53 @@
-import mysql from 'mysql2/promise';
+import { SerialPort } from 'serialport';
+import { ReadlineParser } from '@serialport/parser-readline';
 
-const dbConfig = {
-  host: 'localhost',
-  user: 'root',
-  password: '',
-  database: 'sensor-detect',
-};
-
-export async function POST(request) {
-  const { sensor_id, tipo_evento, valor, ubicacion } = await request.json();
-
+export async function GET() {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    await connection.execute(
-      'INSERT INTO eventos_deteccion (sensor_id, tipo_evento, valor, ubicacion) VALUES (?, ?, ?, ?)',
-      [sensor_id, tipo_evento, valor, ubicacion]
-    );
+    // Listar puertos disponibles
+    const ports = await SerialPort.list();
+    const arduinoPortInfo = ports.find(p => p.manufacturer?.includes('Arduino'));
 
-    return new Response(JSON.stringify({ success: true }), { status: 200 });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: 'Error al guardar detección' }), { status: 500 });
+    if (!arduinoPortInfo) {
+      return Response.json({ error: "Arduino no encontrado" }, { status: 404 });
+    }
+
+    // Configurar conexión serial
+    const port = new SerialPort({
+      path: arduinoPortInfo.path,
+      baudRate: 115200 // Debe coincidir con tu Arduino
+    });
+
+    const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
+    
+    // Escuchar datos (SSE)
+    const stream = new ReadableStream({
+      start(controller) {
+        parser.on('data', (data) => {
+          try {
+            // Limpiar y parsear datos JSON
+            const cleanData = data.toString().trim();
+            if (cleanData.startsWith('{') && cleanData.endsWith('}')) {
+              const jsonData = JSON.parse(cleanData);
+              controller.enqueue(`data: ${JSON.stringify(jsonData)}\n\n`);
+            }
+          } catch (e) {
+            console.error("Error parsing:", e);
+          }
+        });
+      },
+      cancel() {
+        port.close();
+      }
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache'
+      }
+    });
+  } catch (error) {
+    return Response.json({ error: error.message }, { status: 500 });
   }
 }

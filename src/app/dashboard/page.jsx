@@ -1,114 +1,386 @@
 "use client";
-import { useState } from "react";
+import { SafeMap } from '../../components/SafeMap';
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { FaBell, FaChartLine, FaCog, FaSignOutAlt, FaHome, FaMapMarkerAlt } from "react-icons/fa";
 import { FiActivity } from "react-icons/fi";
+import { Scatter } from 'react-chartjs-2';
+import { 
+  Chart as ChartJS, 
+  LinearScale, 
+  PointElement, 
+  Tooltip, 
+  Legend,
+  TimeScale
+} from 'chart.js';
+import 'chartjs-adapter-date-fns';
 
-// Datos simulados para pruebas
-const deteccionesSimuladas = [
-  {
-    id: 1,
-    sensor_id: "sensor1",
-    fecha_hora: new Date().toISOString(),
-    tipo_evento: "deteccion",
-    valor: 1,
-    ubicacion: "Cocina",
-    nivel: "alto",
-    tipo_animal: "rata" // Nuevo campo para tu proyecto
-  },
-  {
-    id: 2,
-    sensor_id: "sensor1",
-    fecha_hora: new Date(Date.now() - 1000 * 60 * 5).toISOString(),
-    tipo_evento: "deteccion",
-    valor: 1,
-    ubicacion: "Cocina",
-    nivel: "medio",
-    tipo_animal: "rata"
-  },
-  {
-    id: 3,
-    sensor_id: "sensor2",
-    fecha_hora: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-    tipo_evento: "temperatura",
-    valor: 32.5,
-    ubicacion: "Almacén",
-    nivel: "critico"
-  },
-];
+// Registra los componentes necesarios
+ChartJS.register(LinearScale, PointElement, Tooltip, Legend, TimeScale);
 
-const sensores = [
-  { id: "sensor1", nombre: "Sensor Cocina", estado: "activo", ultima_lectura: "2 min ago", ubicacion: "Cocina", tipo: "movimiento" },
-  { id: "sensor2", nombre: "Sensor Almacén", estado: "activo", ultima_lectura: "15 min ago", ubicacion: "Almacén", tipo: "temperatura" },
-  { id: "sensor3", nombre: "Sensor Entrada", estado: "inactivo", ultima_lectura: "1 hr ago", ubicacion: "Entrada Principal", tipo: "movimiento" },
-];
 
 export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [email, setEmail] = useState("ismael@gmail.com"); // Simulamos el usuario
+  const [email, setEmail] = useState("ismael@gmail.com");
+  const [sensorData, setSensorData] = useState(null);
+  const [detectionHistory, setDetectionHistory] = useState([]);
+  const [sensorStatus, setSensorStatus] = useState("activo");
+
+  // Datos simulados para sensores (puedes reemplazar con datos reales si tienes múltiples sensores)
+  const [sensores, setSensores] = useState([
+    { id: "sensor1", nombre: "Sensor Ultrasónico", estado: "activo", ultima_lectura: "Ahora", ubicacion: "Sumidero", tipo: "movimiento" }
+  ]);
+
+  // Obtener datos en tiempo real del sensor
+  useEffect(() => {
+    const eventSource = new EventSource('/api/detecciones');
+    
+    eventSource.onmessage = (e) => {
+      try {
+        const newData = JSON.parse(e.data);
+        setSensorData(newData);
+        
+        // Actualizar historial (últimas 10 detecciones)
+        setDetectionHistory(prev => [{
+          id: Date.now(),
+          sensor_id: "sensor1",
+          fecha_hora: new Date().toISOString(),
+          tipo_evento: "deteccion",
+          valor: newData.distance,
+          ubicacion: "Sumidero",
+          nivel: newData.distance < 20 ? "alto" : "normal",
+          tipo_animal: "rata"
+        }, ...prev.slice(0, 9)]);
+        
+        // Actualizar estado del sensor
+        setSensores(prev => prev.map(sensor => ({
+          ...sensor,
+          ultima_lectura: "Ahora",
+          estado: "activo"
+        })));
+      } catch (error) {
+        console.error('Error parsing data:', error);
+      }
+    };
+
+    return () => eventSource.close();
+  }, []);
 
   if (!email) {
     router.push("/login");
     return null;
   }
 
-  // Extraer el nombre del email para el saludo
   const nombreUsuario = email.split('@')[0];
 
-  // Función para manejar el cierre de sesión
   const handleLogout = () => {
-    // Aquí iría la lógica para cerrar sesión
     router.push("/login");
   };
 
-  // Función para navegar entre pestañas
   const navigateTo = (tab) => {
     setActiveTab(tab);
   };
 
-  // Renderizar contenido según la pestaña activa
+  // Calcular estadísticas
+  const deteccionesHoy = detectionHistory.filter(d => 
+    new Date(d.fecha_hora).toDateString() === new Date().toDateString()
+  ).length;
+
+  //para que aparezcan todos los filtros
+  const [timeFilter, setTimeFilter] = useState('today');
+
+  const filteredAlerts = detectionHistory.filter(alert => {
+    const alertDate = new Date(alert.fecha_hora);
+    const today = new Date();
+    
+    if (timeFilter === 'today') {
+      return alertDate.toDateString() === today.toDateString();
+    } else if (timeFilter === 'week') {
+      const oneWeekAgo = new Date(today);
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      return alertDate >= oneWeekAgo;
+    }
+    return true; // 'all' filter
+  });
+
   const renderContent = () => {
     switch (activeTab) {
-      case "analiticas": {/* ----------------------------------------- SECCION ANALITICAS ----------------------------------------- */}
-        return (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-4">Análisis de Datos</h2>
-            <p className="text-gray-600">Gráficos y estadísticas de detecciones.</p>
-            {/* Aquí irían los gráficos */}
-          </div>
-        );
-    {/* ----------------------------------------- SECCION ALERTAS ----------------------------------------- */}
+      case "analiticas":
+      // Prepara los datos para el gráfico
+      const chartData = {
+        datasets: [
+          {
+            label: 'Detecciones',
+            data: detectionHistory.map(d => ({
+              x: new Date(d.fecha_hora),
+              y: d.valor
+            })),
+            backgroundColor: detectionHistory.map(d => 
+              d.nivel === 'alto' ? 'rgba(255, 99, 132, 0.7)' : 'rgba(54, 162, 235, 0.7)'
+            ),
+            pointRadius: 8,
+            pointHoverRadius: 10
+          }
+        ]
+      };
+
+      const options = {
+        scales: {
+          x: {
+            type: 'time',
+            time: {
+              unit: 'hour',
+              tooltipFormat: 'PPpp',
+              displayFormats: {
+                hour: 'HH:mm'
+              }
+            },
+            title: {
+              display: true,
+              text: 'Hora de detección'
+            }
+          },
+          y: {
+            title: {
+              display: true,
+              text: 'Distancia (cm)'
+            },
+            min: 0,
+            max: Math.max(100, ...detectionHistory.map(d => d.valor)) + 20
+          }
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                return `Distancia: ${context.parsed.y} cm`;
+              },
+              title: function(context) {
+                return new Date(context[0].parsed.x).toLocaleString('es-ES');
+              }
+            }
+          },
+          legend: {
+            display: false
+          }
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 className="text-xl font-semibold text-gray-800 mb-4">Análisis de Datos</h2>
+          
+          {detectionHistory.length > 0 ? (
+            <>
+              <div className="h-80">
+                <Scatter 
+                  data={chartData} 
+                  options={options} 
+                />
+              </div>
+              
+              <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-blue-50 p-4 rounded-lg">
+                  <h3 className="font-medium text-blue-800">Total detecciones</h3>
+                  <p className="text-2xl font-bold">{detectionHistory.length}</p>
+                </div>
+                
+                <div className="bg-red-50 p-4 rounded-lg">
+                  <h3 className="font-medium text-red-800">Alertas (≤20cm)</h3>
+                  <p className="text-2xl font-bold">
+                    {detectionHistory.filter(d => d.nivel === 'alto').length}
+                  </p>
+                </div>
+                
+                <div className="bg-green-50 p-4 rounded-lg">
+                  <h3 className="font-medium text-green-800">Distancia promedio</h3>
+                  <p className="text-2xl font-bold">
+                    {Math.round(
+                      detectionHistory.reduce((sum, d) => sum + d.valor, 0) / 
+                      detectionHistory.length
+                    )} cm
+                  </p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="text-gray-500">No hay suficientes datos para mostrar análisis</p>
+          )}
+        </div>
+      );
+
       case "alertas":
         return (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-4">Historial de Alertas</h2>
-            <p className="text-gray-600">Registro completo de todas las alertas.</p>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="p-6 border-b border-gray-200 flex justify-between items-center">
+              <h2 className="text-xl font-semibold text-gray-800 flex items-center">
+                <FaBell className="text-red-500 mr-2" />
+                Historial de Alertas
+              </h2>
+              <div className="flex space-x-2">
+                <button 
+                  onClick={() => setTimeFilter('today')} 
+                  className={`px-3 py-1 text-sm rounded-lg ${
+                    timeFilter === 'today' ? 'bg-blue-50 text-blue-600' : 'bg-gray-50 text-gray-600'
+                  } hover:bg-blue-100`}
+                >
+                  Hoy
+                </button>
+                <button 
+                  onClick={() => setTimeFilter('week')}
+                  className={`px-3 py-1 text-sm rounded-lg ${
+                    timeFilter === 'week' ? 'bg-blue-50 text-blue-600' : 'bg-gray-50 text-gray-600'
+                  } hover:bg-gray-100`}
+                >
+                  Esta semana
+                </button>
+                <button 
+                  onClick={() => setTimeFilter('all')}
+                  className={`px-3 py-1 text-sm rounded-lg ${
+                    timeFilter === 'all' ? 'bg-blue-50 text-blue-600' : 'bg-gray-50 text-gray-600'
+                  } hover:bg-gray-100`}
+                >
+                  Todos
+                </button>
+              </div>
+            </div>
+            
+            <div className="divide-y divide-gray-200">
+              {filteredAlerts.length > 0 ? (
+                filteredAlerts.map((deteccion) => (
+                  <div 
+                    key={deteccion.id} 
+                    className={`p-4 hover:bg-gray-50 transition-colors ${
+                      deteccion.nivel === 'alto' ? 'bg-red-50/50' : 'bg-white'
+                    }`}
+                  >
+                    <div className="flex items-start">
+                      <div className={`flex-shrink-0 mt-1 mr-3 flex items-center justify-center h-8 w-8 rounded-full ${
+                        deteccion.nivel === 'alto' ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'
+                      }`}>
+                        <FaBell className="text-sm" />
+                      </div>
+                      
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between">
+                          <p className="text-sm font-medium text-gray-900">
+                            {deteccion.nivel === 'alto' ? 'Alerta: Objeto detectado' : 'Lectura normal'}
+                          </p>
+                          <div className="text-xs text-gray-500 ml-2 whitespace-nowrap">
+                            {new Date(deteccion.fecha_hora).toLocaleDateString('es-ES', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric'
+                            })}
+                            <span className="mx-1">•</span>
+                            {new Date(deteccion.fecha_hora).toLocaleTimeString('es-ES', {
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </div>
+                        </div>
+                        
+                        <div className="mt-1 flex items-center">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            deteccion.nivel === 'alto' 
+                              ? 'bg-red-100 text-red-800' 
+                              : 'bg-green-100 text-green-800'
+                          }`}>
+                            {deteccion.ubicacion}
+                          </span>
+                          <span className="ml-2 text-sm text-gray-500">
+                            Distancia: {deteccion.valor} cm
+                          </span>
+                        </div>
+                        
+                        {deteccion.nivel === 'alto' && (
+                          <div className="mt-2 flex items-center text-sm text-red-600">
+                            <svg className="flex-shrink-0 mr-1.5 h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                            </svg>
+                            ¡Objeto detectado a {deteccion.valor} cm del sensor!
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="p-6 text-center text-gray-500">
+                  No hay alertas registradas
+                </div>
+              )}
+            </div>
+           
           </div>
         );
-    {/* ----------------------------------------- SECCION UBICACIONES ----------------------------------------- */}
+
       case "ubicaciones":
-        return (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-4">Mapa de Ubicaciones</h2>
-            <p className="text-gray-600">Visualización de sensores en el mapa.</p>
-          </div>
-        );
-    {/* ----------------------------------------- SECCION CONFIGURACION ----------------------------------------- */}
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="p-6 border-b border-gray-200">
+        <h2 className="text-xl font-semibold text-gray-800 flex items-center">
+          <FaMapMarkerAlt className="text-blue-600 mr-2" />
+          Ubicación del Sensor
+        </h2>
+      </div>
+      
+      <div className="p-6">
+        <div className="h-96 w-full rounded-lg overflow-hidden relative">
+          <SafeMap />
+        </div>
+        
+        <div className="mt-6 space-y-2">
+          <h3 className="font-medium text-lg">Residencial Huaranguillo</h3>
+          <p className="text-gray-600">HCPF+MJR, Arequipa 04013</p>
+          <a 
+            href="https://maps.app.goo.gl/HnVY75qF6LMpHns39?g_st=iw" 
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center text-blue-600 hover:text-blue-800"
+          >
+            <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
+            </svg>
+            Ver en Google Maps
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+
       case "configuracion":
         return (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <h2 className="text-xl font-semibold text-gray-800 mb-4">Configuración del Sistema</h2>
-            <p className="text-gray-600">Ajustes y preferencias.</p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-gray-700 mb-2">Umbral de alerta (cm)</label>
+                <input 
+                  type="number" 
+                  defaultValue="20"
+                  className="border rounded-lg px-3 py-2 w-full max-w-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-700 mb-2">Notificaciones</label>
+                <select className="border rounded-lg px-3 py-2">
+                  <option>Activadas</option>
+                  <option>Desactivadas</option>
+                </select>
+              </div>
+            </div>
           </div>
         );
+
       default:
         return (
           <>
             {/* Bienvenida */}
             <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl shadow-lg p-6 mb-6 text-white">
               <h1 className="text-2xl md:text-3xl font-bold mb-2">¡Bienvenido, {nombreUsuario}!</h1>
-              <p className="text-blue-100">Sistema de detección de ratas en tiempo real</p>
+              <p className="text-blue-100">Monitoreo en tiempo real - {sensorData ? `${sensorData.distance} cm` : 'Conectando...'}</p>
             </div>
 
             {/* Resumen rápido */}
@@ -117,60 +389,73 @@ export default function DashboardPage() {
                 <div className="flex justify-between items-start">
                   <div>
                     <p className="text-gray-500 text-sm">Sensores activos</p>
-                    <h3 className="text-2xl font-bold text-gray-800 mt-1">2</h3>
+                    <h3 className="text-2xl font-bold text-gray-800 mt-1">{sensores.filter(s => s.estado === 'activo').length}</h3>
                   </div>
                   <div className="p-3 rounded-lg bg-blue-100 text-blue-600">
                     <FiActivity className="text-xl" />
                   </div>
                 </div>
-                <div className="text-green-500 text-sm mt-2 flex items-center">
-                  <span className="w-2 h-2 rounded-full bg-green-500 mr-1"></span>
-                  <span>+1 desde ayer</span>
-                </div>
+                <p className="text-gray-500 text-sm mt-2">En línea</p>
               </div>
 
               <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
                 <div className="flex justify-between items-start">
                   <div>
                     <p className="text-gray-500 text-sm">Detecciones hoy</p>
-                    <h3 className="text-2xl font-bold text-gray-800 mt-1">2</h3>
+                    <h3 className="text-2xl font-bold text-gray-800 mt-1">{deteccionesHoy}</h3>
                   </div>
                   <div className="p-3 rounded-lg bg-red-100 text-red-600">
                     <FaBell className="text-xl" />
                   </div>
                 </div>
-                <div className="text-red-500 text-sm mt-2 flex items-center">
-                  <span className="w-2 h-2 rounded-full bg-red-500 mr-1"></span>
-                  <span>+2 desde ayer</span>
+                <div className={`text-sm mt-2 flex items-center ${
+                  detectionHistory[0]?.nivel === 'alto' ? 'text-red-500' : 'text-green-500'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full mr-1 ${
+                    detectionHistory[0]?.nivel === 'alto' ? 'bg-red-500' : 'bg-green-500'
+                  }`}></span>
+                  <span>{detectionHistory[0]?.nivel === 'alto' ? 'Objeto cercano' : 'Todo normal'}</span>
                 </div>
               </div>
 
               <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
                 <div className="flex justify-between items-start">
                   <div>
-                    <p className="text-gray-500 text-sm">Ubicaciones</p>
-                    <h3 className="text-2xl font-bold text-gray-800 mt-1">3</h3>
+                    <p className="text-gray-500 text-sm">Distancia actual</p>
+                    <h3 className="text-2xl font-bold text-gray-800 mt-1">
+                      {sensorData ? sensorData.distance : '--'} cm
+                    </h3>
                   </div>
                   <div className="p-3 rounded-lg bg-green-100 text-green-600">
                     <FaMapMarkerAlt className="text-xl" />
                   </div>
                 </div>
-                <p className="text-gray-500 text-sm mt-2">Monitoreadas</p>
+                <div className={`text-sm mt-2 ${
+                  sensorData?.distance < 20 ? 'text-red-500' : 'text-gray-500'
+                }`}>
+                  {sensorData?.distance < 20 ? '¡Alerta! Objeto cercano' : 'Rango seguro'}
+                </div>
               </div>
 
               <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
                 <div className="flex justify-between items-start">
                   <div>
                     <p className="text-gray-500 text-sm">Estado del sistema</p>
-                    <h3 className="text-2xl font-bold text-gray-800 mt-1">Activo</h3>
+                    <h3 className="text-2xl font-bold text-gray-800 mt-1">
+                      {sensorStatus === 'activo' ? 'Activo' : 'Inactivo'}
+                    </h3>
                   </div>
                   <div className="p-3 rounded-lg bg-indigo-100 text-indigo-600">
                     <FaCog className="text-xl" />
                   </div>
                 </div>
-                <div className="text-green-500 text-sm mt-2 flex items-center">
-                  <span className="w-2 h-2 rounded-full bg-green-500 mr-1"></span>
-                  <span>Todo normal</span>
+                <div className={`text-sm mt-2 flex items-center ${
+                  sensorStatus === 'activo' ? 'text-green-500' : 'text-gray-500'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full mr-1 ${
+                    sensorStatus === 'activo' ? 'bg-green-500' : 'bg-gray-500'
+                  }`}></span>
+                  <span>{sensorStatus === 'activo' ? 'Conectado' : 'Sin conexión'}</span>
                 </div>
               </div>
             </div>
@@ -182,47 +467,44 @@ export default function DashboardPage() {
                 <div className="p-6 border-b border-gray-200">
                   <h2 className="text-xl font-semibold text-gray-800 flex items-center">
                     <FaBell className="text-blue-600 mr-2" />
-                    Detecciones Recientes
+                    Datos en Tiempo Real
                   </h2>
                 </div>
-                <div className="divide-y divide-gray-200">
-                  {deteccionesSimuladas.map((deteccion) => (
-                    <div 
-                      key={deteccion.id} 
-                      className={`p-4 hover:bg-gray-50 transition-colors ${
-                        deteccion.nivel === 'critico' ? 'bg-red-50/50 hover:bg-red-50' : 
-                        deteccion.nivel === 'alto' ? 'bg-orange-50/50 hover:bg-orange-50' : 
-                        'bg-blue-50/50 hover:bg-blue-50'
-                      }`}
-                    >
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center space-x-3">
-                          <div className={`w-3 h-3 rounded-full ${
-                            deteccion.nivel === 'critico' ? 'bg-red-500' : 
-                            deteccion.nivel === 'alto' ? 'bg-orange-500' : 'bg-blue-500'
-                          }`}></div>
-                          <span className="font-medium">{deteccion.ubicacion}</span>
-                        </div>
-                        <span className="text-sm text-gray-500">
-                          {new Date(deteccion.fecha_hora).toLocaleTimeString()}
-                        </span>
+                {sensorData ? (
+                  <div className="p-6">
+                    <div className="grid grid-cols-3 gap-4 text-center mb-6">
+                      <div className="p-4 bg-blue-50 rounded-lg">
+                        <p className="text-sm text-gray-500">Distancia</p>
+                        <p className="text-2xl font-bold">{sensorData.distance} cm</p>
                       </div>
-                      <div className="text-sm text-gray-600 mt-1 ml-6">
-                        {deteccion.tipo_evento === 'deteccion' 
-                          ? `Rata detectada (${deteccion.tipo_animal})` 
-                          : `Temperatura alta: ${deteccion.valor}°C`}
+                      <div className="p-4 bg-green-50 rounded-lg">
+                        <p className="text-sm text-gray-500">Fecha</p>
+                        <p className="text-lg">{sensorData.date}</p>
+                      </div>
+                      <div className="p-4 bg-purple-50 rounded-lg">
+                        <p className="text-sm text-gray-500">Hora</p>
+                        <p className="text-lg">{sensorData.time}</p>
                       </div>
                     </div>
-                  ))}
-                </div>
-                <div className="p-4 border-t border-gray-200 text-center">
-                  <button 
-                    onClick={() => navigateTo("alertas")}
-                    className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                  >
-                    Ver todas las detecciones
-                  </button>
-                </div>
+                    
+                    <div className={`p-4 rounded-lg ${
+                      sensorData.distance < 20 ? 'bg-red-50 border border-red-200' : 'bg-gray-50'
+                    }`}>
+                      <p className="font-medium">
+                        {sensorData.distance < 20 ? '¡ALERTA! Objeto detectado cerca' : 'Todo normal'}
+                      </p>
+                      <p className="text-sm mt-1">
+                        {sensorData.distance < 20 
+                          ? `Objeto a ${sensorData.distance} cm del sensor` 
+                          : `Distancia actual: ${sensorData.distance} cm`}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-6 text-center text-gray-500">
+                    Conectando con el sensor...
+                  </div>
+                )}
               </div>
 
               {/* Estado de sensores */}
@@ -250,16 +532,14 @@ export default function DashboardPage() {
                       <div className="text-sm text-gray-600 mt-1 ml-6">
                         {sensor.ubicacion} · {sensor.tipo}
                       </div>
+                      {sensorData && (
+                        <div className="mt-2 ml-6 text-sm">
+                          <p>Última lectura: {sensorData.distance} cm</p>
+                          <p>Hora: {sensorData.time}</p>
+                        </div>
+                      )}
                     </div>
                   ))}
-                </div>
-                <div className="p-4 border-t border-gray-200 text-center">
-                  <button 
-                    onClick={() => navigateTo("configuracion")}
-                    className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                  >
-                    Gestionar sensores
-                  </button>
                 </div>
               </div>
             </div>

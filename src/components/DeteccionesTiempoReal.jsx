@@ -1,53 +1,59 @@
-"use client";
-import { useEffect, useState } from 'react';
+'use client';
+import { useState, useEffect } from 'react';
 
-export default function DeteccionesTiempoReal({ initialData }) {
-  const [detecciones, setDetecciones] = useState(initialData);
-  const [isConnected, setIsConnected] = useState(false);
+export default function DeteccionesTiempoReal() {
+  const [deteccion, setDeteccion] = useState(null);
+  const [historial, setHistorial] = useState([]);
 
   useEffect(() => {
-    const eventSource = new EventSource(`${process.env.NEXT_PUBLIC_API_URL}/api/sse`);
-
-    eventSource.onopen = () => {
-      setIsConnected(true);
+    const eventSource = new EventSource('/api/detecciones');
+    
+    eventSource.onmessage = (e) => {
+      try {
+        const newData = JSON.parse(e.data);
+        setDeteccion(newData);
+        setHistorial(prev => [newData, ...prev.slice(0, 10)]); // Mantener último 10 registros
+      } catch (error) {
+        console.error('Error parsing data:', error);
+      }
     };
 
-    eventSource.onmessage = (event) => {
-      const newDetection = JSON.parse(event.data);
-      setDetecciones(prev => [newDetection, ...prev.slice(0, 9)]);
-    };
-
-    eventSource.onerror = () => {
-      setIsConnected(false);
-      eventSource.close();
-    };
-
-    return () => {
-      eventSource.close();
-    };
+    return () => eventSource.close();
   }, []);
 
   return (
-    <div>
-      <div className="mb-4 flex items-center">
-        <div className={`w-3 h-3 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
-        <span className="text-sm">{isConnected ? 'Conectado en tiempo real' : 'Desconectado'}</span>
-      </div>
+    <div className="p-4">
+      <h2 className="text-xl font-bold mb-4">Detecciones en Tiempo Real</h2>
       
-      <div className="space-y-3">
-        {detecciones.map((deteccion, index) => (
-          <div key={index} className="p-3 border border-gray-200 rounded-lg hover:bg-gray-50">
-            <div className="flex justify-between items-center">
-              <span className="font-medium">{deteccion.ubicacion}</span>
-              <span className="text-sm text-gray-500">
-                {new Date(deteccion.fecha_hora).toLocaleTimeString()}
-              </span>
+      {deteccion ? (
+        <div className="mb-6 p-4 border rounded-lg bg-white shadow">
+          <h3 className="font-semibold">Última Detección</h3>
+          <p>Dispositivo: {deteccion.device}</p>
+          <p>Fecha: {deteccion.date} - Hora: {deteccion.time}</p>
+          <p className={`font-bold ${
+            deteccion.distance < 20 ? 'text-red-500' : 'text-green-500'
+          }`}>
+            Distancia: {deteccion.distance} cm
+          </p>
+          {deteccion.alert && (
+            <div className="mt-2 p-2 bg-red-100 text-red-800 rounded">
+              {deteccion.alert}
             </div>
-            <div className="text-sm text-gray-600 mt-1">
-              {deteccion.tipo_evento === 'deteccion' ? 'Movimiento detectado' : 'Evento registrado'}
-            </div>
-          </div>
-        ))}
+          )}
+        </div>
+      ) : (
+        <p>Cargando datos del sensor...</p>
+      )}
+
+      <div>
+        <h3 className="font-semibold mb-2">Historial (últimas 10)</h3>
+        <ul className="space-y-2">
+          {historial.map((item, index) => (
+            <li key={index} className="p-2 border-b">
+              {item.time} - {item.distance} cm
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
