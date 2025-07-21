@@ -2,8 +2,8 @@
 import { useState, useEffect } from 'react';
 
 export default function DeteccionesTiempoReal() {
-  const [deteccion, setDeteccion] = useState(null);
-  const [historial, setHistorial] = useState([]);
+  const [sensorData, setSensorData] = useState(null);
+  const [alertStatus, setAlertStatus] = useState('normal');
 
   useEffect(() => {
     const eventSource = new EventSource('/api/detecciones');
@@ -11,8 +11,18 @@ export default function DeteccionesTiempoReal() {
     eventSource.onmessage = (e) => {
       try {
         const newData = JSON.parse(e.data);
-        setDeteccion(newData);
-        setHistorial(prev => [newData, ...prev.slice(0, 10)]); // Mantener último 10 registros
+        
+        // Actualizar datos del sensor
+        setSensorData(newData);
+        
+        // Manejar estados de alerta
+        if (newData.distancia_cm < 20 && newData.distancia_cm > 0) {
+          setAlertStatus('alerta');
+        } else if (e.data.includes('ALARMA')) {
+          setAlertStatus('alerta-critica');
+        } else {
+          setAlertStatus('normal');
+        }
       } catch (error) {
         console.error('Error parsing data:', error);
       }
@@ -22,39 +32,57 @@ export default function DeteccionesTiempoReal() {
   }, []);
 
   return (
-    <div className="p-4">
-      <h2 className="text-xl font-bold mb-4">Detecciones en Tiempo Real</h2>
+    <div className={`p-6 rounded-xl border-2 ${
+      alertStatus === 'alerta' ? 'border-yellow-500 bg-yellow-50' :
+      alertStatus === 'alerta-critica' ? 'border-red-500 bg-red-50 animate-pulse' :
+      'border-gray-200 bg-white'
+    }`}>
+      <h2 className="text-xl font-semibold mb-4">Detección en Tiempo Real</h2>
       
-      {deteccion ? (
-        <div className="mb-6 p-4 border rounded-lg bg-white shadow">
-          <h3 className="font-semibold">Última Detección</h3>
-          <p>Dispositivo: {deteccion.device}</p>
-          <p>Fecha: {deteccion.date} - Hora: {deteccion.time}</p>
-          <p className={`font-bold ${
-            deteccion.distance < 20 ? 'text-red-500' : 'text-green-500'
-          }`}>
-            Distancia: {deteccion.distance} cm
-          </p>
-          {deteccion.alert && (
-            <div className="mt-2 p-2 bg-red-100 text-red-800 rounded">
-              {deteccion.alert}
+      {sensorData ? (
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-gray-600">Dispositivo:</span>
+            <span className="font-medium">{sensorData.device_id}</span>
+          </div>
+          
+          <div className="flex justify-between">
+            <span className="text-gray-600">Fecha y Hora:</span>
+            <span>{sensorData.fecha}</span>
+          </div>
+          
+          <div className="flex justify-between">
+            <span className="text-gray-600">Distancia:</span>
+            <span className={`font-bold ${
+              sensorData.distancia_cm < 20 ? 'text-red-600' : 'text-green-600'
+            }`}>
+              {sensorData.distancia_cm} cm
+            </span>
+          </div>
+          
+          {alertStatus !== 'normal' && (
+            <div className="mt-4 p-3 rounded-lg bg-red-100 text-red-800 flex items-center">
+              <svg 
+                xmlns="http://www.w3.org/2000/svg" 
+                className="h-5 w-5 mr-2" 
+                viewBox="0 0 20 20" 
+                fill="currentColor"
+              >
+                <path 
+                  fillRule="evenodd" 
+                  d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" 
+                  clipRule="evenodd" 
+                />
+              </svg>
+              {alertStatus === 'alerta-critica' 
+                ? '¡ALARMA! Objeto detectado cerca' 
+                : 'Objeto cercano - Precaución'}
             </div>
           )}
         </div>
       ) : (
         <p>Cargando datos del sensor...</p>
       )}
-
-      <div>
-        <h3 className="font-semibold mb-2">Historial (últimas 10)</h3>
-        <ul className="space-y-2">
-          {historial.map((item, index) => (
-            <li key={index} className="p-2 border-b">
-              {item.time} - {item.distance} cm
-            </li>
-          ))}
-        </ul>
-      </div>
     </div>
   );
 }

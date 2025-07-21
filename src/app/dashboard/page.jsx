@@ -18,7 +18,6 @@ import 'chartjs-adapter-date-fns';
 // Registra los componentes necesarios
 ChartJS.register(LinearScale, PointElement, Tooltip, Legend, TimeScale);
 
-
 export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -26,47 +25,96 @@ export default function DashboardPage() {
   const [sensorData, setSensorData] = useState(null);
   const [detectionHistory, setDetectionHistory] = useState([]);
   const [sensorStatus, setSensorStatus] = useState("activo");
+  const [alertStatus, setAlertStatus] = useState("normal"); // 'normal', 'alerta', 'critico'
 
-  // Datos simulados para sensores (puedes reemplazar con datos reales si tienes múltiples sensores)
+  // Datos simulados para sensores
   const [sensores, setSensores] = useState([
     { id: "sensor1", nombre: "Sensor Ultrasónico", estado: "activo", ultima_lectura: "Ahora", ubicacion: "Sumidero", tipo: "movimiento" }
   ]);
 
-  // Obtener datos en tiempo real del sensor
   useEffect(() => {
-    const eventSource = new EventSource('/api/detecciones');
-    
+  let eventSource;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
+
+  const connect = () => {
+    console.log(`Intentando conexión SSE (intento ${reconnectAttempts + 1})`);
+    eventSource = new EventSource('/api/detecciones');
+
+    eventSource.onopen = () => {
+      console.log('Conexión SSE establecida');
+      reconnectAttempts = 0;
+    };
+
     eventSource.onmessage = (e) => {
       try {
-        const newData = JSON.parse(e.data);
-        setSensorData(newData);
+        const eventData = JSON.parse(e.data);
+        console.log('Dato recibido:', eventData);
         
-        // Actualizar historial (últimas 10 detecciones)
-        setDetectionHistory(prev => [{
-          id: Date.now(),
-          sensor_id: "sensor1",
-          fecha_hora: new Date().toISOString(),
-          tipo_evento: "deteccion",
-          valor: newData.distance,
-          ubicacion: "Sumidero",
-          nivel: newData.distance < 20 ? "alto" : "normal",
-          tipo_animal: "rata"
-        }, ...prev.slice(0, 9)]);
+        // Procesar fecha y hora correctamente
+        const fechaHora = new Date(eventData.data.timestamp);
+        const fecha = fechaHora.toLocaleDateString('es-ES');
+        const hora = fechaHora.toLocaleTimeString('es-ES');
         
+        // Determinar estado de alerta basado en la distancia
+        let nivelAlerta = 'normal';
+        if (eventData.data.distance < 10) nivelAlerta = 'critico';
+        else if (eventData.data.distance < 20) nivelAlerta = 'alerta';
+
         // Actualizar estado del sensor
-        setSensores(prev => prev.map(sensor => ({
-          ...sensor,
-          ultima_lectura: "Ahora",
-          estado: "activo"
-        })));
+        setSensorData({
+          distance: eventData.data.distance,
+          status: eventData.data.status,
+          date: fecha,
+          time: hora,
+          raw: eventData.data // Para debug
+        });
+
+        // Actualizar estado de alerta
+        setAlertStatus(nivelAlerta);
+
+        // Solo agregar al historial si es una alerta
+        if (nivelAlerta !== 'normal') {
+          setDetectionHistory(prev => [{
+            id: Date.now(),
+            sensor_id: eventData.data.device_id || 'SENSOR_01',
+            fecha_hora: eventData.data.timestamp,
+            valor: eventData.data.distance,
+            ubicacion: "Sumidero", // Puedes hacerlo dinámico si tienes múltiples sensores
+            nivel: nivelAlerta,
+            tipo_animal: "rata" // O cualquier otro dato que necesites
+          }, ...prev.slice(0, 19)]); // Mantener solo las últimas 20 alertas
+        }
+
       } catch (error) {
-        console.error('Error parsing data:', error);
+        console.error('Error procesando mensaje:', error);
       }
     };
 
-    return () => eventSource.close();
-  }, []);
+    eventSource.onerror = () => {
+      eventSource.close();
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        setTimeout(connect, 3000 * reconnectAttempts);
+      } else {
+        console.error('Máximos intentos de reconexión alcanzados');
+        setSensorData(null);
+      }
+    };
+  };
 
+  connect();
+
+  return () => {
+    if (eventSource) {
+      console.log('Limpiando conexión SSE');
+      eventSource.close();
+    }
+  };
+}, []);
+
+
+  
   if (!email) {
     router.push("/login");
     return null;
@@ -87,7 +135,6 @@ export default function DashboardPage() {
     new Date(d.fecha_hora).toDateString() === new Date().toDateString()
   ).length;
 
-  //para que aparezcan todos los filtros
   const [timeFilter, setTimeFilter] = useState('today');
 
   const filteredAlerts = detectionHistory.filter(alert => {
@@ -99,7 +146,7 @@ export default function DashboardPage() {
     } else if (timeFilter === 'week') {
       const oneWeekAgo = new Date(today);
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      return alertDate >= oneWeekAgo;
+      return alertDate >= oneWeekAgo && alertDate <= today;
     }
     return true; // 'all' filter
   });
@@ -107,108 +154,108 @@ export default function DashboardPage() {
   const renderContent = () => {
     switch (activeTab) {
       case "analiticas":
-      // Prepara los datos para el gráfico
-      const chartData = {
-        datasets: [
-          {
-            label: 'Detecciones',
-            data: detectionHistory.map(d => ({
-              x: new Date(d.fecha_hora),
-              y: d.valor
-            })),
-            backgroundColor: detectionHistory.map(d => 
-              d.nivel === 'alto' ? 'rgba(255, 99, 132, 0.7)' : 'rgba(54, 162, 235, 0.7)'
-            ),
-            pointRadius: 8,
-            pointHoverRadius: 10
-          }
-        ]
-      };
-
-      const options = {
-        scales: {
-          x: {
-            type: 'time',
-            time: {
-              unit: 'hour',
-              tooltipFormat: 'PPpp',
-              displayFormats: {
-                hour: 'HH:mm'
-              }
-            },
-            title: {
-              display: true,
-              text: 'Hora de detección'
+        const chartData = {
+          datasets: [
+            {
+              label: 'Detecciones',
+              data: detectionHistory.map(d => ({
+                x: new Date(d.fecha_hora),
+                y: d.valor
+              })),
+              backgroundColor: detectionHistory.map(d => 
+                d.nivel === 'critico' ? 'rgba(255, 51, 51, 0.7)' : 
+                d.nivel === 'alto' ? 'rgba(255, 153, 51, 0.7)' : 'rgba(54, 162, 235, 0.7)'
+              ),
+              pointRadius: 8,
+              pointHoverRadius: 10
             }
-          },
-          y: {
-            title: {
-              display: true,
-              text: 'Distancia (cm)'
-            },
-            min: 0,
-            max: Math.max(100, ...detectionHistory.map(d => d.valor)) + 20
-          }
-        },
-        plugins: {
-          tooltip: {
-            callbacks: {
-              label: function(context) {
-                return `Distancia: ${context.parsed.y} cm`;
+          ]
+        };
+
+        const options = {
+          scales: {
+            x: {
+              type: 'time',
+              time: {
+                unit: 'hour',
+                tooltipFormat: 'PPpp',
+                displayFormats: {
+                  hour: 'HH:mm'
+                }
               },
-              title: function(context) {
-                return new Date(context[0].parsed.x).toLocaleString('es-ES');
+              title: {
+                display: true,
+                text: 'Hora de detección'
               }
+            },
+            y: {
+              title: {
+                display: true,
+                text: 'Distancia (cm)'
+              },
+              min: 0,
+              max: Math.max(100, ...detectionHistory.map(d => d.valor)) + 20
             }
           },
-          legend: {
-            display: false
+          plugins: {
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  return `Distancia: ${context.parsed.y} cm`;
+                },
+                title: function(context) {
+                  return new Date(context[0].parsed.x).toLocaleString('es-ES');
+                }
+              }
+            },
+            legend: {
+              display: false
+            }
           }
-        }
-      };
+        };
 
-      return (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h2 className="text-xl font-semibold text-gray-800 mb-4">Análisis de Datos</h2>
-          
-          {detectionHistory.length > 0 ? (
-            <>
-              <div className="h-80">
-                <Scatter 
-                  data={chartData} 
-                  options={options} 
-                />
-              </div>
-              
-              <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="bg-blue-50 p-4 rounded-lg">
-                  <h3 className="font-medium text-blue-800">Total detecciones</h3>
-                  <p className="text-2xl font-bold">{detectionHistory.length}</p>
+        return (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-4">Análisis de Datos</h2>
+            
+            {detectionHistory.length > 0 ? (
+              <>
+                <div className="h-80">
+                  <Scatter 
+                    data={chartData} 
+                    options={options} 
+                  />
                 </div>
                 
-                <div className="bg-red-50 p-4 rounded-lg">
-                  <h3 className="font-medium text-red-800">Alertas (≤20cm)</h3>
-                  <p className="text-2xl font-bold">
-                    {detectionHistory.filter(d => d.nivel === 'alto').length}
-                  </p>
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-blue-50 p-4 rounded-lg">
+                    <h3 className="font-medium text-blue-800">Total detecciones</h3>
+                    <p className="text-2xl font-bold">{detectionHistory.length}</p>
+                  </div>
+                  
+                  <div className="bg-red-50 p-4 rounded-lg">
+                    <h3 className="font-medium text-red-800">Alertas críticas</h3>
+                    <p className="text-2xl font-bold">
+                      {detectionHistory.filter(d => d.nivel === 'critico').length}
+                    </p>
+                  </div>
+                  
+                  <div className="bg-green-50 p-4 rounded-lg">
+                    <h3 className="font-medium text-green-800">Distancia promedio</h3>
+                    <p className="text-2xl font-bold">
+                      {Math.round(
+                        detectionHistory.reduce((sum, d) => sum + d.valor, 0) / 
+                        detectionHistory.length
+                      )} cm
+                    </p>
+                  </div>
                 </div>
-                
-                <div className="bg-green-50 p-4 rounded-lg">
-                  <h3 className="font-medium text-green-800">Distancia promedio</h3>
-                  <p className="text-2xl font-bold">
-                    {Math.round(
-                      detectionHistory.reduce((sum, d) => sum + d.valor, 0) / 
-                      detectionHistory.length
-                    )} cm
-                  </p>
-                </div>
-              </div>
-            </>
-          ) : (
-            <p className="text-gray-500">No hay suficientes datos para mostrar análisis</p>
-          )}
-        </div>
-      );
+              </>
+            ) : (
+              <p className="text-gray-500">No hay suficientes datos para mostrar análisis</p>
+            )}
+          </div>
+        );
 
       case "alertas":
         return (
@@ -252,12 +299,15 @@ export default function DashboardPage() {
                   <div 
                     key={deteccion.id} 
                     className={`p-4 hover:bg-gray-50 transition-colors ${
-                      deteccion.nivel === 'alto' ? 'bg-red-50/50' : 'bg-white'
+                      deteccion.nivel === 'critico' ? 'bg-red-50' : 
+                      deteccion.nivel === 'alto' ? 'bg-yellow-50' : 'bg-white'
                     }`}
                   >
                     <div className="flex items-start">
                       <div className={`flex-shrink-0 mt-1 mr-3 flex items-center justify-center h-8 w-8 rounded-full ${
-                        deteccion.nivel === 'alto' ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'
+                        deteccion.nivel === 'critico' ? 'bg-red-100 text-red-600' : 
+                        deteccion.nivel === 'alto' ? 'bg-yellow-100 text-yellow-600' : 
+                        'bg-green-100 text-green-600'
                       }`}>
                         <FaBell className="text-sm" />
                       </div>
@@ -265,27 +315,29 @@ export default function DashboardPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex justify-between">
                           <p className="text-sm font-medium text-gray-900">
-                            {deteccion.nivel === 'alto' ? 'Alerta: Objeto detectado' : 'Lectura normal'}
+                            {deteccion.nivel === 'critico' ? 'ALERTA CRÍTICA' : 
+                             deteccion.nivel === 'alto' ? 'Advertencia' : 'Lectura normal'}
                           </p>
                           <div className="text-xs text-gray-500 ml-2 whitespace-nowrap">
                             {new Date(deteccion.fecha_hora).toLocaleDateString('es-ES', {
                               day: '2-digit',
-                              month: 'short',
+                              month: '2-digit',
                               year: 'numeric'
                             })}
                             <span className="mx-1">•</span>
                             {new Date(deteccion.fecha_hora).toLocaleTimeString('es-ES', {
                               hour: '2-digit',
-                              minute: '2-digit'
+                              minute: '2-digit',
+                              second: '2-digit'
                             })}
                           </div>
                         </div>
                         
                         <div className="mt-1 flex items-center">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            deteccion.nivel === 'alto' 
-                              ? 'bg-red-100 text-red-800' 
-                              : 'bg-green-100 text-green-800'
+                            deteccion.nivel === 'critico' ? 'bg-red-100 text-red-800' : 
+                            deteccion.nivel === 'alto' ? 'bg-yellow-100 text-yellow-800' : 
+                            'bg-green-100 text-green-800'
                           }`}>
                             {deteccion.ubicacion}
                           </span>
@@ -294,12 +346,16 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         
-                        {deteccion.nivel === 'alto' && (
-                          <div className="mt-2 flex items-center text-sm text-red-600">
+                        {(deteccion.nivel === 'critico' || deteccion.nivel === 'alto') && (
+                          <div className={`mt-2 flex items-center text-sm ${
+                            deteccion.nivel === 'critico' ? 'text-red-600' : 'text-yellow-600'
+                          }`}>
                             <svg className="flex-shrink-0 mr-1.5 h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
                               <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                             </svg>
-                            ¡Objeto detectado a {deteccion.valor} cm del sensor!
+                            {deteccion.nivel === 'critico' 
+                              ? `¡Objeto detectado a ${deteccion.valor} cm! (Alarma activada)` 
+                              : `Objeto detectado a ${deteccion.valor} cm del sensor`}
                           </div>
                         )}
                       </div>
@@ -312,43 +368,42 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
-           
           </div>
         );
 
       case "ubicaciones":
-  return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-      <div className="p-6 border-b border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-800 flex items-center">
-          <FaMapMarkerAlt className="text-blue-600 mr-2" />
-          Ubicación del Sensor
-        </h2>
-      </div>
-      
-      <div className="p-6">
-        <div className="h-96 w-full rounded-lg overflow-hidden relative">
-          <SafeMap />
-        </div>
-        
-        <div className="mt-6 space-y-2">
-          <h3 className="font-medium text-lg">Residencial Huaranguillo</h3>
-          <p className="text-gray-600">HCPF+MJR, Arequipa 04013</p>
-          <a 
-            href="https://maps.app.goo.gl/HnVY75qF6LMpHns39?g_st=iw" 
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center text-blue-600 hover:text-blue-800"
-          >
-            <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
-            </svg>
-            Ver en Google Maps
-          </a>
-        </div>
-      </div>
-    </div>
-  );
+        return (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="p-6 border-b border-gray-200">
+              <h2 className="text-xl font-semibold text-gray-800 flex items-center">
+                <FaMapMarkerAlt className="text-blue-600 mr-2" />
+                Ubicación del Sensor
+              </h2>
+            </div>
+            
+            <div className="p-6">
+              <div className="h-96 w-full rounded-lg overflow-hidden relative">
+                <SafeMap />
+              </div>
+              
+              <div className="mt-6 space-y-2">
+                <h3 className="font-medium text-lg">Residencial Huaranguillo</h3>
+                <p className="text-gray-600">HCPF+MJR, Arequipa 04013</p>
+                <a 
+                  href="https://maps.app.goo.gl/HnVY75qF6LMpHns39?g_st=iw" 
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center text-blue-600 hover:text-blue-800"
+                >
+                  <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
+                  </svg>
+                  Ver en Google Maps
+                </a>
+              </div>
+            </div>
+          </div>
+        );
 
       case "configuracion":
         return (
@@ -370,6 +425,14 @@ export default function DashboardPage() {
                   <option>Desactivadas</option>
                 </select>
               </div>
+              <div>
+                <label className="block text-gray-700 mb-2">Nivel de sensibilidad</label>
+                <select className="border rounded-lg px-3 py-2">
+                  <option>Alta</option>
+                  <option>Media</option>
+                  <option>Baja</option>
+                </select>
+              </div>
             </div>
           </div>
         );
@@ -385,6 +448,47 @@ export default function DashboardPage() {
 
             {/* Resumen rápido */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+              {/* Estado del sensor */}
+              <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-gray-500 text-sm">Estado del sensor</p>
+                    <h3 className="text-2xl font-bold text-gray-800 mt-1">
+                      {alertStatus === 'normal' ? 'Normal' : 
+                       alertStatus === 'alerta' ? 'Advertencia' : '¡Alerta!'}
+                    </h3>
+                  </div>
+                  <div className={`p-3 rounded-lg ${
+                    alertStatus === 'normal' ? 'bg-green-100 text-green-600' :
+                    alertStatus === 'alerta' ? 'bg-yellow-100 text-yellow-600' :
+                    'bg-red-100 text-red-600 animate-pulse'
+                  }`}>
+                    <svg 
+                      xmlns="http://www.w3.org/2000/svg" 
+                      className="h-6 w-6" 
+                      fill="none" 
+                      viewBox="0 0 24 24" 
+                      stroke="currentColor"
+                    >
+                      {alertStatus === 'normal' ? (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      ) : (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      )}
+                    </svg>
+                  </div>
+                </div>
+                <div className="mt-2">
+                  {alertStatus === 'normal' ? (
+                    <span className="text-green-500 text-sm">Todo normal</span>
+                  ) : alertStatus === 'alerta' ? (
+                    <span className="text-yellow-500 text-sm">Objeto detectado cerca</span>
+                  ) : (
+                    <span className="text-red-500 text-sm">¡Alarma activa!</span>
+                  )}
+                </div>
+              </div>
+
               <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
                 <div className="flex justify-between items-start">
                   <div>
@@ -409,12 +513,17 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 <div className={`text-sm mt-2 flex items-center ${
-                  detectionHistory[0]?.nivel === 'alto' ? 'text-red-500' : 'text-green-500'
+                  detectionHistory[0]?.nivel === 'critico' ? 'text-red-500' : 
+                  detectionHistory[0]?.nivel === 'alto' ? 'text-yellow-500' : 'text-green-500'
                 }`}>
                   <span className={`w-2 h-2 rounded-full mr-1 ${
-                    detectionHistory[0]?.nivel === 'alto' ? 'bg-red-500' : 'bg-green-500'
+                    detectionHistory[0]?.nivel === 'critico' ? 'bg-red-500' : 
+                    detectionHistory[0]?.nivel === 'alto' ? 'bg-yellow-500' : 'bg-green-500'
                   }`}></span>
-                  <span>{detectionHistory[0]?.nivel === 'alto' ? 'Objeto cercano' : 'Todo normal'}</span>
+                  <span>
+                    {detectionHistory[0]?.nivel === 'critico' ? '¡Alarma activa!' : 
+                     detectionHistory[0]?.nivel === 'alto' ? 'Objeto cercano' : 'Todo normal'}
+                  </span>
                 </div>
               </div>
 
@@ -431,31 +540,11 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 <div className={`text-sm mt-2 ${
-                  sensorData?.distance < 20 ? 'text-red-500' : 'text-gray-500'
+                  sensorData?.distance < 10 ? 'text-red-500' : 
+                  sensorData?.distance < 20 ? 'text-yellow-500' : 'text-gray-500'
                 }`}>
-                  {sensorData?.distance < 20 ? '¡Alerta! Objeto cercano' : 'Rango seguro'}
-                </div>
-              </div>
-
-              <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="text-gray-500 text-sm">Estado del sistema</p>
-                    <h3 className="text-2xl font-bold text-gray-800 mt-1">
-                      {sensorStatus === 'activo' ? 'Activo' : 'Inactivo'}
-                    </h3>
-                  </div>
-                  <div className="p-3 rounded-lg bg-indigo-100 text-indigo-600">
-                    <FaCog className="text-xl" />
-                  </div>
-                </div>
-                <div className={`text-sm mt-2 flex items-center ${
-                  sensorStatus === 'activo' ? 'text-green-500' : 'text-gray-500'
-                }`}>
-                  <span className={`w-2 h-2 rounded-full mr-1 ${
-                    sensorStatus === 'activo' ? 'bg-green-500' : 'bg-gray-500'
-                  }`}></span>
-                  <span>{sensorStatus === 'activo' ? 'Conectado' : 'Sin conexión'}</span>
+                  {sensorData?.distance < 10 ? '¡Alarma activa!' : 
+                   sensorData?.distance < 20 ? 'Advertencia: Objeto cercano' : 'Rango seguro'}
                 </div>
               </div>
             </div>
@@ -488,21 +577,27 @@ export default function DashboardPage() {
                     </div>
                     
                     <div className={`p-4 rounded-lg ${
-                      sensorData.distance < 20 ? 'bg-red-50 border border-red-200' : 'bg-gray-50'
+                      sensorData.distance < 10 ? 'bg-red-50 border border-red-200 animate-pulse' : 
+                      sensorData.distance < 20 ? 'bg-yellow-50 border border-yellow-200' : 'bg-gray-50'
                     }`}>
-                      <p className="font-medium">
-                        {sensorData.distance < 20 ? '¡ALERTA! Objeto detectado cerca' : 'Todo normal'}
+                      <p className={`font-medium ${
+                        sensorData.distance < 10 ? 'text-red-600' : 
+                        sensorData.distance < 20 ? 'text-yellow-600' : 'text-gray-600'
+                      }`}>
+                        {sensorData.distance < 10 ? '¡ALERTA CRÍTICA!' : 
+                         sensorData.distance < 20 ? 'Advertencia: Objeto detectado cerca' : 'Todo normal'}
                       </p>
                       <p className="text-sm mt-1">
-                        {sensorData.distance < 20 
-                          ? `Objeto a ${sensorData.distance} cm del sensor` 
+                        {sensorData.distance < 10 
+                          ? `¡Objeto a ${sensorData.distance} cm! (Alarma activada)` 
                           : `Distancia actual: ${sensorData.distance} cm`}
                       </p>
                     </div>
                   </div>
                 ) : (
-                  <div className="p-6 text-center text-gray-500">
-                    Conectando con el sensor...
+                  <div className="p-4 bg-yellow-50 text-yellow-800 rounded-lg">
+                    <p>Esperando datos del sensor...</p>
+                    <p className="text-sm">Verifica la conexión con el dispositivo</p>
                   </div>
                 )}
               </div>
@@ -536,6 +631,15 @@ export default function DashboardPage() {
                         <div className="mt-2 ml-6 text-sm">
                           <p>Última lectura: {sensorData.distance} cm</p>
                           <p>Hora: {sensorData.time}</p>
+                          <p className={`${
+                            sensorData.distance < 10 ? 'text-red-500' : 
+                            sensorData.distance < 20 ? 'text-yellow-500' : 'text-green-500'
+                          }`}>
+                            Estado: {
+                              sensorData.distance < 10 ? 'Crítico' : 
+                              sensorData.distance < 20 ? 'Advertencia' : 'Normal'
+                            }
+                          </p>
                         </div>
                       )}
                     </div>
@@ -580,7 +684,11 @@ export default function DashboardPage() {
           >
             <FaBell className="text-lg" />
             <span>Alertas</span>
-            <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full ml-auto">3</span>
+            {detectionHistory.filter(d => d.nivel === 'critico' || d.nivel === 'alto').length > 0 && (
+              <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full ml-auto">
+                {detectionHistory.filter(d => d.nivel === 'critico' || d.nivel === 'alto').length}
+              </span>
+            )}
           </button>
           <button 
             onClick={() => navigateTo("ubicaciones")}
@@ -624,7 +732,9 @@ export default function DashboardPage() {
             <div className="relative">
               <button className="text-gray-500 hover:text-gray-700">
                 <FaBell className="text-xl" />
-                <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full"></span>
+                {detectionHistory.filter(d => d.nivel === 'critico' || d.nivel === 'alto').length > 0 && (
+                  <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full"></span>
+                )}
               </button>
             </div>
             <div className="flex items-center space-x-2">
@@ -635,6 +745,24 @@ export default function DashboardPage() {
             </div>
           </div>
         </header>
+
+        {/* Debug Console - Colócalo aquí */}
+      <div className="px-6 pt-4">
+        <div className="bg-gray-100 p-4 rounded-lg mb-6">
+          <h3 className="font-bold mb-2">Debug Console</h3>
+          <div className="bg-black text-green-400 p-3 rounded font-mono text-sm h-40 overflow-auto">
+            {sensorData?.raw ? (
+              <pre>{JSON.stringify(sensorData.raw, null, 2)}</pre>
+            ) : (
+              <p>Esperando datos del sensor...</p>
+            )}
+          </div>
+          <div className="mt-2 text-sm text-gray-600">
+            Estado conexión: {sensorData ? '✅ Activa' : '❌ Desconectado'}
+          </div>
+        </div>
+      </div>
+
 
         {/* Contenido del dashboard */}
         <main className="p-6">
