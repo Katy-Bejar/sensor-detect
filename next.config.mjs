@@ -1,8 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    serverComponentsExternalPackages: ['serialport'],
-  },
+  serverExternalPackages: ['serialport']
+
 };
 
 export default nextConfig;
