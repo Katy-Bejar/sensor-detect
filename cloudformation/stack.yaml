@@ -1,11 +1,23 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Fog to Serverless - API Gateway + Lambda
+Description: >
+  Fog + Serverless Event Processing Architecture
+  (API Gateway + Lambda + SQS + DLQ + DynamoDB + SNS)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: sensor-detect
 
 Resources:
+
+  ############################
+  # IAM ROLE
+  ############################
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub ${ProjectName}-lambda-role
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -15,65 +27,225 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+      Policies:
+        - PolicyName: LambdaExtraAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
 
-  FogEventLambda:
+  ############################
+  # SQS + DLQ
+  ############################
+
+  EventDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${ProjectName}-dlq
+
+  EventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${ProjectName}-queue
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EventDLQ.Arn
+        maxReceiveCount: 5
+
+  ############################
+  # DYNAMODB
+  ############################
+
+  EventTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${ProjectName}-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: device_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: device_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+
+  ############################
+  # SNS
+  ############################
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${ProjectName}-alerts
+
+  ############################
+  # INGEST LAMBDA
+  ############################
+
+  IngestLambda:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: python3.10
-      Handler: index.handler
+      FunctionName: !Sub ${ProjectName}-ingest
+      Runtime: python3.11
+      Handler: index.lambda_handler
       Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref EventQueue
       Code:
         ZipFile: |
           import json
+          import os
+          import boto3
+          import uuid
+          from datetime import datetime
 
-          def handler(event, context):
-              print("Evento recibido desde Fog:")
-              print(json.dumps(event))
-              return {
-                  "statusCode": 200,
-                  "body": json.dumps({"message": "Evento procesado"})
+          sqs = boto3.client("sqs")
+          QUEUE_URL = os.environ["QUEUE_URL"]
+
+          def lambda_handler(event, context):
+              print("EVENT RAW:", json.dumps(event))
+
+              body = event.get("body")
+
+              if body is None:
+                  return {"statusCode": 400, "body": "Missing body"}
+
+              if isinstance(body, str):
+                  body = json.loads(body)
+
+              required = ["device_id", "evento", "nivel"]
+              for field in required:
+                  if field not in body:
+                      return {"statusCode": 400, "body": f"Missing {field}"}
+
+              payload = {
+                  "event_id": str(uuid.uuid4()),
+                  "received_at": datetime.utcnow().isoformat(),
+                  **body
               }
 
-  ApiGateway:
+              print("PAYLOAD TO SQS:", json.dumps(payload))
+
+              sqs.send_message(
+                  QueueUrl=QUEUE_URL,
+                  MessageBody=json.dumps(payload)
+              )
+
+              return {
+                  "statusCode": 202,
+                  "body": json.dumps({"message": "accepted"})
+              }
+
+  ############################
+  # WORKER LAMBDA
+  ############################
+
+  WorkerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-worker
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref EventTable
+          SNS_TOPIC: !Ref AlertTopic
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          dynamodb = boto3.resource("dynamodb")
+          sns = boto3.client("sns")
+
+          table = dynamodb.Table(os.environ["TABLE_NAME"])
+          topic = os.environ["SNS_TOPIC"]
+
+          def lambda_handler(event, context):
+              for record in event["Records"]:
+                  payload = json.loads(record["body"])
+
+                  table.put_item(Item=payload)
+
+                  if payload.get("nivel") == "CRITICO":
+                      sns.publish(
+                          TopicArn=topic,
+                          Subject="ALERTA CRITICA",
+                          Message=json.dumps(payload, indent=2)
+                      )
+
+  ############################
+  # SQS TRIGGER
+  ############################
+
+  WorkerSQSTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt EventQueue.Arn
+      FunctionName: !Ref WorkerLambda
+      BatchSize: 5
+
+  ############################
+  # API GATEWAY
+  ############################
+
+  HttpApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
-      Name: fog-api
+      Name: !Sub ${ProjectName}-api
       ProtocolType: HTTP
 
   ApiIntegration:
     Type: AWS::ApiGatewayV2::Integration
-    DependsOn: FogEventLambda
     Properties:
-      ApiId: !Ref ApiGateway
+      ApiId: !Ref HttpApi
       IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub >
-        arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${FogEventLambda}:invocations
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${IngestLambda}
       PayloadFormatVersion: '2.0'
 
   ApiRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
-      ApiId: !Ref ApiGateway
-      RouteKey: POST /evento
-      Target: !Join
-        - /
-        - - integrations
-          - !Ref ApiIntegration
+      ApiId: !Ref HttpApi
+      RouteKey: POST /event
+      Target: !Sub integrations/${ApiIntegration}
 
   ApiStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
-      ApiId: !Ref ApiGateway
+      ApiId: !Ref HttpApi
       StageName: prod
       AutoDeploy: true
 
-  LambdaPermission:
+  LambdaPermissionApi:
     Type: AWS::Lambda::Permission
-    DependsOn:
-      - FogEventLambda
-      - ApiStage
     Properties:
+      FunctionName: !Ref IngestLambda
       Action: lambda:InvokeFunction
-      FunctionName: !Ref FogEventLambda
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+Outputs:
+  ApiEndpoint:
+    Description: API endpoint para el Fog
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/event
