@@ -1,0 +1,60 @@
+name: CI (Next.js + CloudFormation)
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Build (Next.js)
+        run: npm run build
+
+      - name: Install cfn-lint
+        run: pipx install cfn-lint
+
+      - name: Lint CloudFormation templates
+        run: |
+          set -e
+          echo "Buscando templates CloudFormation..."
+          FOUND=0
+
+          for f in \
+            cloudformation/stack.yaml \
+            cloudformation/template.yaml \
+            cloudformation/template.yml \
+            stack.yaml \
+            template.yaml \
+            template.yml
+          do
+            if [ -f "$f" ]; then
+              echo "cfn-lint => $f"
+              cfn-lint "$f"
+              FOUND=1
+            fi
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "No se encontró template CloudFormation en rutas comunes."
+            echo "Ajusta la ruta en este workflow al nombre real de tu template."
+            exit 1
+          fi
