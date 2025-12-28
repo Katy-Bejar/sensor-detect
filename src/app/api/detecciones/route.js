@@ -74,6 +74,13 @@ export async function GET() {
       new ReadlineParser({ delimiter: '\n' })
     );
 
+    parser.on('error', () => {
+      try {
+        port.close();
+      } catch {}
+    });
+
+
 
     const stream = new ReadableStream({
       start(controller) {
@@ -83,9 +90,9 @@ export async function GET() {
             if (!clean.startsWith('{')) return;
 
             const data = JSON.parse(clean);
-            const distance = data.distance;
+            const distance = Number(data.distance);
 
-            if (distance <= 0) return;
+            if (!Number.isFinite(distance) || distance <= 0) return;
 
             // ===== OBSERVED STATE =====
             let observedState = 'NORMAL';
@@ -125,7 +132,7 @@ export async function GET() {
                 transitionCounter = 0;
 
                 const eventPayload = {
-                  device_id: 'SENSOR_01',
+                  device_id: data.device_id ?? 'UNKNOWN',
                   timestamp: new Date().toISOString(),
                   distance,
                   nivel: currentState,
@@ -149,18 +156,23 @@ export async function GET() {
             // ===== SSE =====
             controller.enqueue(
               `data: ${JSON.stringify({
-                ...data,
-                estado_actual: currentState,
+              device_id: data.device_id,
+              distance,
+              estado_actual: currentState,
+              estado_observado: observedState,
               })}\n\n`
             );
           } catch (err) {
             console.error('FOG error:', err.message);
           }
         });
+        
+
       },
       cancel() {
         port.close();
       },
+      
     });
 
     return new Response(stream, {
