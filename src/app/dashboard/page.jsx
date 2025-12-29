@@ -98,7 +98,7 @@ export default function DashboardPage() {
   }, [activeTab]);
 
 
-  const nombreUsuario = "Edson";
+  const nombreUsuario = "EK_BR";
 
   const navigateTo = (tab) => {
     setActiveTab(tab);

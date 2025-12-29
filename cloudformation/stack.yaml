@@ -1,7 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: >
-  Fog + Serverless Event Processing Architecture
-  (API Gateway + Lambda + SQS + DLQ + DynamoDB + SNS)
+Description: Fog Serverless Event Processing Architecture
 
 Parameters:
   ProjectName:
@@ -62,9 +60,10 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub ${ProjectName}-queue
+      VisibilityTimeout: 60
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt EventDLQ.Arn
-        maxReceiveCount: 5
+        maxReceiveCount: 1
 
   ############################
   # DYNAMODB
@@ -121,10 +120,7 @@ Resources:
           QUEUE_URL = os.environ["QUEUE_URL"]
 
           def lambda_handler(event, context):
-              print("EVENT RAW:", json.dumps(event))
-
               body = event.get("body")
-
               if body is None:
                   return {"statusCode": 400, "body": "Missing body"}
 
@@ -141,8 +137,6 @@ Resources:
                   "received_at": datetime.utcnow().isoformat(),
                   **body
               }
-
-              print("PAYLOAD TO SQS:", json.dumps(payload))
 
               sqs.send_message(
                   QueueUrl=QUEUE_URL,
@@ -181,18 +175,35 @@ Resources:
           table = dynamodb.Table(os.environ["TABLE_NAME"])
           topic = os.environ["SNS_TOPIC"]
 
+          EVENTOS_VALIDOS = {
+              "EVENTO_CRITICO",
+              "EVENTO_WARNING",
+              "EVENTO_RECUPERACION"
+          }
+
           def lambda_handler(event, context):
-              for record in event["Records"]:
-                  payload = json.loads(record["body"])
+            failures = []
 
-                  table.put_item(Item=payload)
+            for record in event["Records"]:
+                payload = json.loads(record["body"])
+                evento = payload.get("evento")
 
-                  if payload.get("nivel") == "CRITICO":
-                      sns.publish(
-                          TopicArn=topic,
-                          Subject="ALERTA CRITICA",
-                          Message=json.dumps(payload, indent=2)
-                      )
+                if evento not in EVENTOS_VALIDOS:
+                    print("Invalid event detected:", evento)
+                    failures.append({"itemIdentifier": record["messageId"]})
+                    continue
+
+                table.put_item(Item=payload)
+
+                if payload.get("nivel") == "CRITICO":
+                    sns.publish(
+                        TopicArn=topic,
+                        Subject="CRITICAL ALERT",
+                        Message=json.dumps(payload, indent=2)
+                    )
+
+            return {"batchItemFailures": failures}
+
 
   ############################
   # SQS TRIGGER
@@ -203,7 +214,9 @@ Resources:
     Properties:
       EventSourceArn: !GetAtt EventQueue.Arn
       FunctionName: !Ref WorkerLambda
-      BatchSize: 5
+      BatchSize: 1
+      FunctionResponseTypes:
+      - ReportBatchItemFailures
 
   ############################
   # API GATEWAY
@@ -247,5 +260,5 @@ Resources:
 
 Outputs:
   ApiEndpoint:
-    Description: API endpoint para el Fog
+    Description: API endpoint for Fog
     Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/event

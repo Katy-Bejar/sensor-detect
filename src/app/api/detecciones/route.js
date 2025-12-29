@@ -20,7 +20,7 @@ async function enviarEventoALaNube(payload) {
   const CLOUD_ENDPOINT = process.env.CLOUD_ENDPOINT;
 
   if (!CLOUD_ENDPOINT) {
-    console.warn('⚠️ CLOUD_ENDPOINT no definido. Evento NO enviado a la nube.');
+    console.warn(' CLOUD_ENDPOINT no definido. Evento NO enviado a la nube.');
     return;
   }
 
@@ -33,20 +33,13 @@ async function enviarEventoALaNube(payload) {
 
     if (!res.ok) {
       console.error(
-        `❌ Error enviando a la nube (${res.status})`
+        ` Error enviando a la nube (${res.status})`
       );
     }
   } catch (err) {
-    console.error('❌ Error de conexión con la nube:', err.message);
+    console.error(' Error de conexión con la nube:', err.message);
   }
 }
-
-
-
-
-
-
-
 
 // ================== SSE ==================
 export async function GET() {
@@ -79,8 +72,6 @@ export async function GET() {
         port.close();
       } catch {}
     });
-
-
 
     const stream = new ReadableStream({
       start(controller) {
@@ -145,9 +136,9 @@ export async function GET() {
                 };
 
                 console.log(
-                  `🚨 CAMBIO DE ESTADO: ${previous} → ${currentState}`
+                  `  CAMBIO DE ESTADO: ${previous} → ${currentState}`
                 );
-                console.log('📦 Evento generado:', eventPayload);
+                console.log('  Evento generado:', eventPayload);
 
                 await enviarEventoALaNube(eventPayload);
               }
@@ -166,13 +157,10 @@ export async function GET() {
             console.error('FOG error:', err.message);
           }
         });
-        
-
       },
       cancel() {
         port.close();
       },
-      
     });
 
     return new Response(stream, {
@@ -182,5 +170,4 @@ export async function GET() {
         'Cache-Control': 'no-cache',
       },
     });
-  
 }
