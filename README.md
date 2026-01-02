@@ -1,20 +1,6 @@
 # Sistema IoT–Fog–Cloud para Detección de Eventos Críticos  
 Arquitectura híbrida con Fog Computing y Serverless en AWS
 
-Este proyecto implementa un sistema IoT completo que integra **dispositivos físicos**, **procesamiento en Fog** y una **arquitectura Cloud Serverless**, con el objetivo de detectar eventos críticos de manera eficiente, reducir tráfico innecesario hacia la nube y demostrar buenas prácticas de diseño en arquitecturas distribuidas.
-
----
-
-## 👥 Integrantes del equipo
-
-- **Edson Bryan Béjar Román**  
-- **Katherine Nikole Béjar Román**
-
----
-
-# Sistema IoT–Fog–Cloud para Detección de Eventos Críticos  
-Arquitectura híbrida con Fog Computing y Serverless en AWS
-
 Este proyecto implementa un sistema IoT completo que integra dispositivos físicos, procesamiento en Fog y una arquitectura Cloud Serverless, con el objetivo de detectar eventos críticos de manera eficiente, reducir tráfico innecesario hacia la nube y demostrar buenas prácticas de diseño en arquitecturas distribuidas.
 
 ---
